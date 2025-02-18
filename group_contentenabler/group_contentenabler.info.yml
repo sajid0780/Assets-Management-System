@@ -1,0 +1,5 @@
+name:  'Group Custom entity'
+type: module
+description: 'Add custom entities to group'
+package: Custom
+core_version_requirement: ^8 || ^9 || ^10

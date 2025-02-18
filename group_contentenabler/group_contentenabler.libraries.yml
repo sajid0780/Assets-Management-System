@@ -1,0 +1,6 @@
+group_contentenabler:
+  version: 1.x
+  js:
+    js/group_contentenabler.js: {}
+  dependencies:
+    - core/jquery
