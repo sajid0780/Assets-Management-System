@@ -1,0 +1,1303 @@
+<?php
+
+/**
+ * @file
+ * Provides an inspection template entity type.
+ */
+
+use Drupal\assets_management\Entity\AssetType;
+use Drupal\assets_management\Entity\DefaultAssetType;
+use Drupal\component\Entity\Component;
+use Drupal\component\Entity\DefaultComponent;
+use Drupal\Core\Batch\BatchBuilder;
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Render\BubbleableMetadata;
+use Drupal\Core\Render\Markup;
+use Drupal\Core\Url;
+use Drupal\feature\Entity\DefaultFeature;
+use Drupal\feature\Entity\Feature;
+use Drupal\group\Entity\Group;
+use Drupal\inspection_template\Entity\DefaultInspectionTemplate;
+use Drupal\inspection_template\Entity\DefaultTemplateConfiguration;
+use Drupal\inspection_template\Entity\InspectionTemplate;
+use Drupal\inspection_template\Entity\TemplateConfiguration;
+use Drupal\inspection_template_element\Entity\DefaultInspectionTemplateEle;
+use Drupal\inspection_template_element\Entity\InspectionTemplateElement;
+use Drupal\maintenance\Entity\DefaultMaintenanceItem;
+use Drupal\maintenance\Entity\DefaultMaintenanceTask;
+use Drupal\maintenance\Entity\MaintenanceItem;
+use Drupal\maintenance\Entity\MaintenanceTask;
+use Drupal\Core\Entity\EntityTypeManagerInterface;
+use Drupal\user\Entity\User;
+use Drupal\Core\Ajax\AjaxResponse;
+use Drupal\Core\Ajax\OpenModalDialogCommand;
+
+/**
+ * Implements hook_library_info().
+ */
+function group_contentenabler_library_info() {
+  $libraries['group_contentenabler'] = [
+    'title' => 'group_contentenabler setting page',
+    'version' => '1.0',
+    'js' => [
+      'js/group_contentenabler.js' => [],
+    ],
+  ];
+
+  return $libraries;
+}
+
+/**
+ * Implements hook_preprocess_page().
+ */
+function group_contentenabler_preprocess_page(&$variables) {
+  // Attach the custom module library to all pages.
+  $variables['#attached']['library'][] = 'group_contentenabler/group_contentenabler';
+}
+
+/**
+ * Hook_form_alter().
+ */
+function group_contentenabler_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  if ($form_id == "group_lga_add_form" || $form_id == "group_lga_edit_form") {
+    $gid = \Drupal::request()->get('groupId');
+
+    $url_string = "/group/add/lga";
+    $template_url = Url::fromUri("internal:{$url_string}");
+    // Create a container element for report type create and edit buttons.
+    $form['add_lga_container'] = [
+      '#type' => 'container',
+      '#weight' => -0,
+      '#attributes' => [
+        'class' => [
+          'button-right',
+          'button-container',
+          'd-flex',
+          'justify-content-end',
+          'flex-gap-16',
+          'mb-16',
+          'mt-50',
+        ],
+      ],
+    ];
+    $linkEditText = '<img src="/themes/custom/assets_theme/icons/add.svg">  ' . t('Create new LGA');
+    $form['add_lga_container']['add_lga'] = [
+      '#type' => 'link',
+      '#title' => Markup::create($linkEditText),
+      '#url' => $template_url,
+      '#attributes' => [
+        'class' => ['button', 'link--primary', 'link-decoration-none', 'button--secondary'],
+      ],
+      '#weight' => -0,
+    ];
+
+    $form['group_member'] = [
+      '#type' => 'view',
+      '#name' => 'group_members',
+      '#display_id' => 'block_1',
+      '#arguments' => [
+        'arg1' => $gid,
+      ],
+      '#weight' => 30,
+    ];
+    $form['actions']['submit']['#submit'][] = 'group_contentenabler_add_group_redirect';
+    $form['actions']['delete']['#title'] = 'Delete LGA';
+    $form['actions']['delete']['#attributes']['data-dialog-options'] = json_encode([
+      'width' => 480,
+      'dialogClass' => 'popup-modal popup-modal--delete',
+    ]);
+  }
+
+  if ($form_id == "group_relationship_lga-group_membership_add_form") {
+    $form['#prefix'] = '<div id="modal-form">';
+    $form['#suffix'] = '</div>';
+    $form['messages'] = [
+      '#weight' => -9999,
+      '#type' => 'status_messages',
+    ];
+    $markup = '<div class="description"><p>Select an existing member or add a new one. Members can manage or view LGA assets based on the assigned role.</p></div>';
+    $form['field_mycustommarkup'] = [
+      '#type' => 'markup',
+      '#markup' => $markup,
+      '#weight' => -1,
+    ];
+    // $form['#validate'][] = 'group_already_exit_validate';
+    $form["group_roles"]["widget"]["#type"] = "select";
+    $form["group_roles"]["widget"]["#title"] = "Access type";
+    $form["entity_id"]["widget"][0]["target_id"]["#title"] = "Select existing member";
+    $form["entity_id"]["widget"][0]["target_id"]["#placeholder"] = 'Search...';
+    $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+    $loadGroupRoles = $groupMembershipService->loadGroupTypeRoles();
+    $form["group_roles"]["widget"]["#options"] = $loadGroupRoles;
+    $form['actions']['submit']['#submit'][] = 'group_contentenabler_assign_role_to_group_member';
+  }
+  if ($form_id == "group_relationship_lga-group_membership_edit_form") {
+    $form['#prefix'] = '<div id="modal-form">';
+    $form['#suffix'] = '</div>';
+
+    $form['messages'] = [
+      '#weight' => -9999,
+      '#type' => 'status_messages',
+    ];
+
+    $markup = '<div class="description"><p>Members can manage or view LGA assets based on the assigned role.</p></div>';
+    $form['field_mycustommarkup'] = [
+      '#type' => 'markup',
+      '#markup' => $markup,
+      '#weight' => -1,
+    ];
+
+    $form['actions']['cancel'] = [
+      '#type' => 'button',
+      '#value' => 'Cancel',
+      '#attributes' => [
+        'class' => ['cancel-modal'],
+      ],
+    ];
+    unset($form["actions"]["delete"]);
+    $form["group_roles"]["widget"]["#type"] = "select";
+    $form["group_roles"]["widget"]["#title"] = "Assign role";
+    $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+    $loadGroupRoles = $groupMembershipService->loadGroupTypeRoles();
+    $form["group_roles"]["widget"]["#options"] = $loadGroupRoles;
+    $form['actions']['submit']['#submit'][] = 'group_contentenabler_assign_role_to_group_member';
+  }
+  if ($form_id == "user_add_new_member_form") {
+    $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+    // Call the method to add a member to a group.
+    $loadGroupRoles = $groupMembershipService->loadGroupTypeRoles();
+    $form["field_access_type"]["widget"]["#options"] = $loadGroupRoles;
+    $form['actions']['submit']['#submit'][] = 'group_contentenabler_add_member_to_group';
+    $form['account']['notify']['#default_value'] = TRUE;
+    $group_id = \Drupal::request()->query->get('gid');
+    $url_string = "/group/$group_id/content/add/group_membership?destination=/group/$group_id/edit?groupId=$group_id";
+    $url = Url::fromUri("internal:{$url_string}");
+    $markup = '<div class="description"><p>Select an existing member or add a new one. Members can manage or view LGA assets based on the assigned role.</p></div>';
+    $form['field_mycustommarkup'] = [
+      '#type' => 'markup',
+      '#markup' => $markup,
+      '#weight' => -1,
+    ];
+    $form['#prefix'] = '<div id="modal-form">';
+    $form['#suffix'] = '</div>';
+
+    $form['messages'] = [
+      '#weight' => -9999,
+      '#type' => 'status_messages',
+    ];
+    $user = \Drupal::currentUser();
+    if (in_array('administrator', $user->getRoles()) || in_array('asset_engine_admin', $user->getRoles())) {
+      $form['actions']['select_exists_member'] = [
+        '#type' => 'link',
+        '#title' => t('Member already exists?'),
+        '#url' => $url,
+        '#weight' => -11,
+        '#attributes' => [
+          'class' => ['use-ajax', 'button', 'button--transparent', 'link--primary'],
+          'data-dialog-type' => 'modal',
+          'data-dialog-options' => json_encode([
+            'title' => 'Add member',
+            'width' => 480,
+            'dialogClass' => ['popup-modal'],
+            'draggable' => TRUE,
+          ]),
+        ],
+      ];
+    }
+  }
+  if ($form_id == "group_lga_delete_form") {
+    $form['actions']['submit']['#submit'][] = 'group_contentenabler_delete_group_redirect';
+  }
+  if ($form_id == "user_lga_member_form") {
+
+    $form['wrapper'] = [
+      '#type' => 'container',
+      '#attributes' => ['class' => ['field-group-html-element', 'col-equal']],
+      '#weight' => 2,
+    ];
+
+    // Move phone and email fields into the wrapper.
+    $form['wrapper']['field_phone_number'] = $form['field_phone_number'];
+    unset($form['field_phone_number']);
+    $form['wrapper']['mail'] = $form["account"]['mail'];
+    unset($form["account"]['mail']);
+    $form["account"]["name"]['#access'] = FALSE;
+    $form["account"]["pass"]['#access'] = FALSE;
+    $form["account"]["current_pass"]['#access'] = FALSE;
+    $form["account"]["status"]['#access'] = FALSE;
+    $form["account"]["roles"]['#access'] = FALSE;
+    $form["account"]["notify"]['#access'] = FALSE;
+    $form["field_last_password_reset"]['#access'] = FALSE;
+    $uid = \Drupal::request()->get('uid');
+    $uid = (!empty($uid)) ? $uid : 1;
+    $form['lga_member'] = [
+      '#type' => 'view',
+      '#name' => 'lga_members',
+      '#display_id' => 'block_2',
+      '#arguments' => [
+        'arg1' => $uid,
+      ],
+      '#weight' => 30,
+    ];
+    $form['actions']['delete']['#title'] = 'Delete member';
+    $form['actions']['delete'] = [
+      '#type' => 'submit',
+      '#value' => 'Delete member',
+    ];
+    $form['actions']['delete']['#ajax'] = [
+      'callback' => 'group_contentenabler_lga_members_delete_form',
+      'event' => 'click',
+    ];
+
+    $form['#attached']['library'][] = 'core/drupal.dialog.ajax';
+
+  }
+
+  if ($form_id == "assign_group_form_selectlist") {
+    $markup = '<div class="description"><p>Member can manage or view LGAs and or groups based on the assigned role.</p></div>';
+    $form['field_mycustommarkup'] = [
+      '#type' => 'markup',
+      '#markup' => $markup,
+      '#weight' => -1,
+    ];
+
+    $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+    // Call the method to add a member to a group.
+    $loadGroup = $groupMembershipService->loadMemberGroup();
+    $form["group_name"]["#options"] = $loadGroup;
+
+    $form['actions']['submit']['#attributes']['class'][] = 'button button--secondary';
+
+    unset($form['actions']['submit']['#attributes']['class']['ui-button']);
+    $form['actions']['submit']['#value'] = 'Save changes';
+    $form['actions']['cancel'] = [
+      '#type' => 'submit',
+      '#value' => 'Cancel',
+      '#weight' => -3,
+      '#attributes' => [
+        'class' => ['button', 'button--tertiary', 'cancel-modal', 'ml-auto'],
+      ],
+    ];
+    $form['actions']['delete']['#weight'] = -4;
+    $form['actions']['delete']['#attributes']['class'][] = 'button button--primary button--delete button--danger';
+  }
+
+  if($form_id == "user_cancel_form") {
+    $form['actions']['cancel']['#weight'] = -4;
+    $form['actions']['cancel']['#attributes']['class'][] = 'button button--tertiary';
+    $form['actions']['submit']['#attributes']['class'][] = 'button button--secondary';
+    $form['actions']['submit']['#submit'][] = 'group_contentenabler_delete_user_account';
+  }
+
+  if ($form_id == "group_lga_add_form") {
+    $form['actions']['submit']['#submit'][] = 'group_contentenabler_add_default_components';
+  }
+
+  if ($form_id == "group_relationship_lga-group_membership_delete_form") {
+    $form['actions']['submit']['#submit'][] = 'group_contentenabler_membership_delete_form';
+  }
+}
+
+/**
+ * Implements callback().
+ */
+function group_contentenabler_add_group_redirect(&$form, FormStateInterface $form_state) {
+  $id = $form_state->getformObject()->getEntity()->id();
+  $form_state->setRedirectUrl(Url::fromUri("internal:/group/$id/edit?groupId=$id"));
+}
+
+/**
+ * Implements callback().
+ */
+function group_contentenabler_delete_group_redirect(&$form, FormStateInterface $form_state) {
+  $form_state->setRedirectUrl(Url::fromUri("internal:/group/add/lga"));
+}
+
+function group_contentenabler_delete_user_account(&$form, FormStateInterface $form_state) {
+  $form_state->setRedirectUrl(Url::fromUri("internal:/lga-members"));
+}
+
+function group_contentenabler_lga_members_delete_form (array &$form, FormStateInterface $form_state) {
+  $uid_route = \Drupal::request()->query->get('uid');
+  if (!empty($uid_route) && $uid_route != NULL) {
+    $user = User::load($uid_route);
+    // Build the User deletion form.
+    $form = \Drupal::service('entity.form_builder')->getForm($user, 'cancel');
+    $form['#action'] = '/user/' . $user->id() . '/cancel';
+    // Create an AJAX response object.
+    $response = new AjaxResponse();
+    // Add a command to open the modal dialog.
+    $response->addCommand(new OpenModalDialogCommand('Delete Member', $form, [
+      'width' => '680',
+      'dialogClass' => 'popup-modal popup-modal--user',
+    // Return the AJAX response.
+    ]));
+    return $response;
+  }
+}
+
+/**
+ * Membership delete form.
+ */
+function group_contentenabler_membership_delete_form(&$form, FormStateInterface $form_state) {
+  $entity = $form_state->getformObject()->getEntity();
+  if (!empty($entity->get('entity_id')->getValue())) {
+    $uid = $entity->get('entity_id')->getValue()[0]['target_id'];
+    $user = User::load($uid);
+    if ($user->hasRole('lga_admin') && group_contentenabler_check_user_group_roles($uid, 'lga-admin') != TRUE) {
+      $user->removeRole('lga_admin');
+    }
+    elseif ($user->hasRole('lga_member') && group_contentenabler_check_user_group_roles($uid, 'lga-member') != TRUE) {
+      $user->removeRole('lga_member');
+    }
+    // Save the user entity to apply the changes.
+    $user->save();
+  }
+}
+
+/**
+ * Implements callback().
+ */
+function group_contentenabler_add_member_to_group(&$form, FormStateInterface $form_state) {
+  $entity = $form_state->getformObject()->getEntity();
+  $id = $entity->id();
+  $group_id = \Drupal::request()->query->get('gid');
+  $type = \Drupal::request()->query->get('type');
+  $role = $entity->get('field_access_type')->target_id;
+  if (!empty($id) && !empty($group_id) && !empty($entity) && !empty($role)) {
+    $user = User::load($id);
+    if ($user) {
+      if ($role != 'lga-admin' && group_contentenabler_check_user_group_roles($id, 'lga-admin') != TRUE && $user->hasRole('lga_admin')) {
+        // Remove the role from the user.
+        $user->removeRole('lga_admin');
+      }
+      elseif ($role != 'lga-member' && group_contentenabler_check_user_group_roles($id, 'lga-member') != TRUE && $user->hasRole('lga_member')) {
+        $user->removeRole('lga_member');
+      }
+
+      if ($role == "lga-admin") {
+        // Set the role for the user.
+        $user->addRole('lga_admin');
+      }
+      elseif ($role == "lga-member") {
+        // Set the role for the user.
+        $user->addRole('lga_member');
+      }
+      // Save the user.
+      $user->save();
+    }
+    $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+    // Call the method to add a member to a group.
+    $groupMembershipService->addMemberToGroup($id, $group_id, $role);
+    $groupMembershipService->setUserData($id, $group_id);
+    if ($type == "member") {
+      $form_state->setRedirectUrl(Url::fromUri("internal:/lga-members?uid=$id"));
+    }
+  }
+}
+
+/**
+ * Submit handler.
+ */
+function group_contentenabler_assign_role_to_group_member(&$form, FormStateInterface $form_state) {
+  $entity = $form_state->getformObject()->getEntity();
+  $role = $entity->get('group_roles')->target_id;
+  $group_id = $entity->get('gid')->target_id;
+  if (!empty($entity) && !empty($role)) {
+    $id = $entity->get("entity_id")->target_id;
+    $user = User::load($id);
+    if ($user) {
+      if ($role != 'lga-admin' && group_contentenabler_check_user_group_roles($id, 'lga-admin') != TRUE && $user->hasRole('lga_admin')) {
+        // Remove the role from the user.
+        $user->removeRole('lga_admin');
+      }
+      elseif ($role != 'lga-member' && group_contentenabler_check_user_group_roles($id, 'lga-member') != TRUE && $user->hasRole('lga_member')) {
+        $user->removeRole('lga_member');
+      }
+
+      if ($role == "lga-admin") {
+        // Set the role for the user.
+        $user->addRole('lga_admin');
+      }
+      elseif ($role == "lga-member") {
+        // Set the role for the user.
+        $user->addRole('lga_member');
+      }
+      // Save the user.
+      $user->save();
+    }
+
+  }
+}
+
+/**
+ * Check user group roles.
+ */
+function group_contentenabler_check_user_group_roles($id, $scope) {
+  $account = User::load($id);
+  // Load the group memberships for the user.
+  $group_memberships = \Drupal::service('group.membership_loader')->loadByUser($account);
+  // Iterate through each group membership.
+  foreach ($group_memberships as $group_membership) {
+    // Get the roles for each group membership.
+    $group_roles = $group_membership->getRoles();
+    foreach ($group_roles as $group_role) {
+      if ($group_role->id() == 'lga-admin' && $scope == 'lga-admin') {
+        return TRUE;
+      }
+      elseif ($group_role->id() == 'lga-member' && $scope == 'lga-member') {
+        return TRUE;
+      }
+    }
+  }
+}
+
+/**
+ * Implements callback().
+ */
+function group_contentenabler_entity_type_build(array &$entity_types) {
+  $entity_types['user']->setFormClass('lga_member', 'Drupal\user\ProfileForm');
+}
+
+/**
+ * Implements hook_token_info().
+ */
+function group_contentenabler_token_info() {
+
+  $info = [];
+  $info['types']['group_contentenabler'] = [
+    'name' => t('Current Group Id'),
+    'description' => t('Current Group Id.'),
+  ];
+  $info['tokens']['group_contentenabler']['gid'] = [
+    'name' => t("Group Id"),
+    'description' => t('Current Group ID.'),
+  ];
+  return $info;
+
+}
+
+/**
+ * Implements hook_token().
+ */
+function group_contentenabler_tokens($type, $tokens, array $data, array $options, BubbleableMetadata $bubbleable_metadata) {
+  $replacements = [];
+  $user = \Drupal::currentUser();
+  if ($type == 'group_contentenabler') {
+    foreach ($tokens as $name => $original) {
+      switch ($name) {
+        case 'gid':
+          $data = \Drupal::service('user.data')->get('group_contentenabler', $user->id(), 'lga');
+          $replacements[$original] = $data;
+          // Add cache tag for the 'user' entity.
+          $bubbleable_metadata->addCacheableDependency($user);
+          // Invalidate cache tags for the 'group_contentenabler' entity.
+          $bubbleable_metadata->addCacheTags(['group_token_' . $user->id()]);
+          break;
+      }
+    }
+  }
+  return $replacements;
+}
+
+/**
+ * Callback function.
+ */
+function group_contentenabler_add_default_components(&$form, FormStateInterface $form_state) {
+  $group_id = $form_state->getFormObject()->getEntity()->id();
+  if (!empty($group_id)) {
+    // Define the list of entity types to process.
+    $entity_types = [
+      'default_feature' => 'feature',
+      'default_component' => 'component',
+      'default_asset_type' => 'asset_type',
+      'default_maintenance_item' => 'maintenance_item',
+      'default_maintenance_task' => 'maintenance_task',
+      'default_inspection_template' => 'inspection_template',
+      'default_inspection_template_ele' => 'inspection_template_element',
+      'default_template_configuration' => 'template_configuration',
+    ];
+
+    // Set up batch processing.
+    $batch_builder = new BatchBuilder();
+    $batch_builder->setTitle(t('Cloning Default settings'))
+      ->setInitMessage(t('Batch process is starting.'))
+      ->setProgressMessage(t('Processed @current out of @total.'))
+      ->setErrorMessage(t('An error occurred during processing'));
+
+    // Add operations for each entity type.
+    foreach ($entity_types as $entity_type => $plugin_id) {
+      $batch_builder->addOperation('group_contentenabler_add_default_entity_to_group_batch', [$group_id, $entity_type]);
+    }
+
+    // Add operations for each entity type.
+    foreach ($entity_types as $entity_type => $plugin_id) {
+      $batch_builder->addOperation('group_contentenabler_add_cloned_reference_batch', [$group_id, $entity_type]);
+    }
+    // Set final operation.
+    $batch_builder->setFinishCallback('group_contentenabler_batch_complete');
+
+    // Start the batch process.
+    batch_set($batch_builder->toArray());
+  }
+}
+
+/**
+ * Callback for References.
+ */
+function group_contentenabler_add_cloned_reference_batch($group_id, $entity_type) {
+
+  if ($entity_type == "default_feature") {
+    $feat_storage = \Drupal::entityTypeManager()->getStorage('feature');
+    $feature_ids = $feat_storage->getQuery()
+      ->condition('group_field', $group_id)
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    if ($feature_ids) {
+      $all_features = $feat_storage->loadMultiple($feature_ids);
+      foreach ($all_features as $feature) {
+        $get_cloned_ref_id = $feature->get('cloned_ref_id')->value;
+        $defaultFeature = DefaultFeature::load($get_cloned_ref_id);
+        $defaultComponent_id = $defaultFeature->get('feature_component')->getValue()[0]['target_id'];
+
+        $component_storage = \Drupal::entityTypeManager()->getStorage('component');
+        $component_ids = $component_storage->getQuery()
+          ->condition('group_field', $group_id)
+          ->condition('cloned_ref_id', $defaultComponent_id)
+          ->condition('status', 1)
+          ->accessCheck(FALSE)
+          ->execute();
+
+        if ($component_ids) {
+          foreach ($component_ids as $component_id) {
+            $feature->set('feature_component', $component_id);
+          }
+        }
+        $feature->save();
+      }
+    }
+  }
+
+  if ($entity_type == "default_component") {
+    $component_storage = \Drupal::entityTypeManager()->getStorage('component');
+    $component_ids = $component_storage->getQuery()
+      ->condition('group_field', $group_id)
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    if ($component_ids) {
+      $all_components = $component_storage->loadMultiple($component_ids);
+      foreach ($all_components as $component) {
+        $get_cloned_ref_id = $component->get('cloned_ref_id')->value;
+        $defaultComponent = DefaultComponent::load($get_cloned_ref_id);
+
+        foreach ($defaultComponent->get('component_asset_type')->getValue() as $asset_type) {
+          $default_asset_type_id = $asset_type['target_id'];
+
+          $asset_type_storage = \Drupal::entityTypeManager()->getStorage('asset_type');
+          $asset_type_ids = $asset_type_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_asset_type_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($asset_type_ids) {
+            foreach ($asset_type_ids as $asset_type_id) {
+              $component->component_asset_type[] = ['target_id' => $asset_type_id];
+              // $component->save();
+            }
+          }
+        }
+        if ($defaultComponent->get('component_maintenance')->getValue()) {
+          $default_maintenance_id = $defaultComponent->get('component_maintenance')->getValue()[0]['target_id'];
+
+          $maintenance_item_storage = \Drupal::entityTypeManager()->getStorage('maintenance_item');
+          $maintenance_item_ids = $maintenance_item_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_maintenance_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+          if ($maintenance_item_ids) {
+            foreach ($maintenance_item_ids as $maintenance_item_id) {
+              $component->component_maintenance = ['target_id' => $maintenance_item_id];
+              // $component->save();
+            }
+          }
+        }
+        $component->save();
+      }
+    }
+  }
+
+  if ($entity_type == "default_asset_type") {
+    $asset_type_storage = \Drupal::entityTypeManager()->getStorage('asset_type');
+    $asset_type_ids = $asset_type_storage->getQuery()
+      ->condition('group_field', $group_id)
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    if ($asset_type_ids) {
+      $asset_types = $asset_type_storage->loadMultiple($asset_type_ids);
+      foreach ($asset_types as $asset_type) {
+        $get_cloned_ref_id = $asset_type->get('cloned_ref_id')->value;
+        $defaultAssetType = DefaultAssetType::load($get_cloned_ref_id);
+        if ($defaultAssetType->get('asset_type_inspection_template')->getValue()) {
+          $defaultInspectionTemplateId = $defaultAssetType->get('asset_type_inspection_template')->getValue()[0]['target_id'];
+
+          $inspection_template_storage = \Drupal::entityTypeManager()->getStorage('inspection_template');
+          $inspection_template_ids = $inspection_template_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $defaultInspectionTemplateId)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($inspection_template_ids) {
+            foreach ($inspection_template_ids as $inspection_template_id) {
+              $asset_type->asset_type_inspection_template = ['target_id' => $inspection_template_id];
+            }
+          }
+          $asset_type->save();
+        }
+      }
+    }
+  }
+
+  if ($entity_type == "default_maintenance_item") {
+    $maintenance_item_storage = \Drupal::entityTypeManager()->getStorage('maintenance_item');
+    $maintenance_item_ids = $maintenance_item_storage->getQuery()
+      ->condition('group_field', $group_id)
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    if ($maintenance_item_ids) {
+      $maintenance_items = $maintenance_item_storage->loadMultiple($maintenance_item_ids);
+      foreach ($maintenance_items as $maintenance_item) {
+        $get_cloned_ref_id = $maintenance_item->get('cloned_ref_id')->value;
+        $defaultMaintenanceItem = DefaultMaintenanceItem::load($get_cloned_ref_id);
+        if ($defaultMaintenanceItem->get('maintenance_inspection_template')->getValue()) {
+          $default_inspection_template_id = $defaultMaintenanceItem->get('maintenance_inspection_template')->getValue()[0]['target_id'];
+
+          $inspection_template_storage = \Drupal::entityTypeManager()->getStorage('inspection_template');
+          $inspection_template_ids = $inspection_template_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_inspection_template_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($inspection_template_ids) {
+            foreach ($inspection_template_ids as $inspection_template_id) {
+              $maintenance_item->maintenance_inspection_template = ['target_id' => $inspection_template_id];
+            }
+          }
+        }
+        if ($defaultMaintenanceItem->get('maintenance_asset_type')->getValue()) {
+          $default_asset_type_ids = $defaultMaintenanceItem->get('maintenance_asset_type')->getValue();
+
+          foreach ($default_asset_type_ids as $default_asset_type_id) {
+            $asset_type_storage = \Drupal::entityTypeManager()->getStorage('asset_type');
+            $asset_type_ids = $asset_type_storage->getQuery()
+              ->condition('group_field', $group_id)
+              ->condition('cloned_ref_id', $default_asset_type_id['target_id'])
+              ->condition('status', 1)
+              ->accessCheck(FALSE)
+              ->execute();
+
+            if ($asset_type_ids) {
+              foreach ($asset_type_ids as $asset_type_id) {
+                $maintenance_item->maintenance_asset_type[] = ['target_id' => $asset_type_id];
+              }
+            }
+          }
+        }
+        if ($defaultMaintenanceItem->get('component')->getValue()) {
+          $default_component_id = $defaultMaintenanceItem->get('component')->getValue()[0]['target_id'];
+
+          $component_storage = \Drupal::entityTypeManager()->getStorage('component');
+          $component_ids = $component_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_component_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($component_ids) {
+            foreach ($component_ids as $component_id) {
+              $maintenance_item->component = ['target_id' => $component_id];
+            }
+          }
+        }
+        $maintenance_item->save();
+      }
+    }
+  }
+
+  if ($entity_type == "default_maintenance_task") {
+    $maintenance_task_storage = \Drupal::entityTypeManager()->getStorage('maintenance_task');
+    $maintenance_task_ids = $maintenance_task_storage->getQuery()
+      ->condition('group_field', $group_id)
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    if ($maintenance_task_ids) {
+      $maintenance_tasks = $maintenance_task_storage->loadMultiple($maintenance_task_ids);
+      foreach ($maintenance_tasks as $maintenance_task) {
+        $get_cloned_ref_id = $maintenance_task->get('cloned_ref_id')->value;
+        $defaultMaintenanceTask = DefaultMaintenanceTask::load($get_cloned_ref_id);
+        if ($defaultMaintenanceTask->get('maintenance_items')->getValue()) {
+          $default_maintenance_task_id = $defaultMaintenanceTask->get('maintenance_items')->getValue()[0]['target_id'];
+
+          $maintenance_item_storage = \Drupal::entityTypeManager()->getStorage('maintenance_item');
+          $maintenance_item_ids = $maintenance_item_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_maintenance_task_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($maintenance_item_ids) {
+            foreach ($maintenance_item_ids as $maintenance_item_id) {
+              $maintenance_task->maintenance_items = ['target_id' => $maintenance_item_id];
+            }
+          }
+        }
+
+        if ($defaultMaintenanceTask->get('feature_link')->getValue()) {
+          $default_feature_id = $defaultMaintenanceTask->get('feature_link')->getValue()[0]['target_id'];
+
+          $feature_storage = \Drupal::entityTypeManager()->getStorage('feature');
+          $feature_ids = $feature_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_feature_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($feature_ids) {
+            foreach ($feature_ids as $feature_id) {
+              $maintenance_task->feature_link = ['target_id' => $feature_id];
+            }
+          }
+        }
+        $maintenance_task->save();
+      }
+    }
+  }
+
+  if ($entity_type == "default_inspection_template") {
+    $inspection_template_storage = \Drupal::entityTypeManager()->getStorage('inspection_template');
+    $inspection_template_ids = $inspection_template_storage->getQuery()
+      ->condition('group_field', $group_id)
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    if ($inspection_template_ids) {
+      $inspection_templates = $inspection_template_storage->loadMultiple($inspection_template_ids);
+      foreach ($inspection_templates as $inspection_template) {
+        $get_cloned_ref_id = $inspection_template->get('cloned_ref_id')->value;
+        $defaultInspectionTemplate = DefaultInspectionTemplate::load($get_cloned_ref_id);
+        if ($defaultInspectionTemplate->get('applicable_asset')->getValue()) {
+          foreach ($defaultInspectionTemplate->get('applicable_asset')->getValue() as $applicable_asset) {
+            $default_asset_type_id = $applicable_asset['target_id'];
+
+            $asset_type_storage = \Drupal::entityTypeManager()->getStorage('asset_type');
+            $asset_type_ids = $asset_type_storage->getQuery()
+              ->condition('group_field', $group_id)
+              ->condition('cloned_ref_id', $default_asset_type_id)
+              ->condition('status', 1)
+              ->accessCheck(FALSE)
+              ->execute();
+
+            if ($asset_type_ids) {
+              foreach ($asset_type_ids as $asset_type_id) {
+                $inspection_template->applicable_asset[] = ['target_id' => $asset_type_id];
+              }
+            }
+          }
+        }
+        $inspection_template->save();
+      }
+    }
+  }
+
+  if ($entity_type == "default_inspection_template_ele") {
+    $inspection_template_element_storage = \Drupal::entityTypeManager()->getStorage('inspection_template_element');
+    $inspection_template_element_ids = $inspection_template_element_storage->getQuery()
+      ->condition('group_field', $group_id)
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    if ($inspection_template_element_ids) {
+      $inspection_template_elements = $inspection_template_element_storage->loadMultiple($inspection_template_element_ids);
+      foreach ($inspection_template_elements as $inspection_template_element) {
+        $get_cloned_ref_id = $inspection_template_element->get('cloned_ref_id')->value;
+        $defaultInspectionTemplateElement = DefaultInspectionTemplateEle::load($get_cloned_ref_id);
+
+        if ($defaultInspectionTemplateElement->get('component_link')->getValue()) {
+          $default_component_id = $defaultInspectionTemplateElement->get('component_link')->getValue()[0]['target_id'];
+
+          $component_storage = \Drupal::entityTypeManager()->getStorage('component');
+          $component_ids = $component_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_component_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($component_ids) {
+            foreach ($component_ids as $component_id) {
+              $inspection_template_element->set('component_link', $component_id);
+            }
+          }
+        }
+        if ($defaultInspectionTemplateElement->get('feature_link')->getValue()) {
+          $default_feature_id = $defaultInspectionTemplateElement->get('feature_link')->getValue()[0]['target_id'];
+
+          $feature_storage = \Drupal::entityTypeManager()->getStorage('feature');
+          $feature_ids = $feature_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_feature_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($feature_ids) {
+            foreach ($feature_ids as $feature_id) {
+              $inspection_template_element->set('feature_link', $feature_id);
+            }
+          }
+        }
+        if ($defaultInspectionTemplateElement->get('parent_target')->getValue()) {
+          $default_inspection_ele_parent_target_id = $defaultInspectionTemplateElement->get('parent_target')->getValue()[0]['target_id'];
+
+          $nspection_template_element_storage = \Drupal::entityTypeManager()->getStorage('inspection_template_element');
+          $nspection_template_element_ids = $nspection_template_element_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_inspection_ele_parent_target_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($nspection_template_element_ids) {
+            foreach ($nspection_template_element_ids as $nspection_template_element_id) {
+              $inspection_template_element->set('parent_target', $nspection_template_element_id);
+            }
+          }
+        }
+        $inspection_template_element->save();
+      }
+    }
+  }
+
+  if ($entity_type == "default_template_configuration") {
+    $template_configuration_storage = \Drupal::entityTypeManager()->getStorage('template_configuration');
+    $template_configuration_ids = $template_configuration_storage->getQuery()
+      ->condition('group_field', $group_id)
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    if ($template_configuration_ids) {
+      $template_configurations = $template_configuration_storage->loadMultiple($template_configuration_ids);
+      foreach ($template_configurations as $template_configuration) {
+        $get_cloned_ref_id = $template_configuration->get('cloned_ref_id')->value;
+        $defaultTemplateConfiguration = DefaultTemplateConfiguration::load($get_cloned_ref_id);
+
+        if ($defaultTemplateConfiguration->get('component_link')->getValue()) {
+          $default_component_id = $defaultTemplateConfiguration->get('component_link')->getValue()[0]['target_id'];
+
+          $component_storage = \Drupal::entityTypeManager()->getStorage('component');
+          $component_ids = $component_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_component_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($component_ids) {
+            foreach ($component_ids as $component_id) {
+              $template_configuration->set('component_link', $component_id);
+            }
+          }
+        }
+
+        if ($defaultTemplateConfiguration->get('feature_link')->getValue()) {
+          $default_feature_id = $defaultTemplateConfiguration->get('feature_link')->getValue()[0]['target_id'];
+
+          $feature_storage = \Drupal::entityTypeManager()->getStorage('feature');
+          $feature_ids = $feature_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_feature_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($feature_ids) {
+            foreach ($feature_ids as $feature_id) {
+              $template_configuration->set('feature_link', $feature_id);
+            }
+          }
+        }
+        if ($defaultTemplateConfiguration->get('parent_target')->getValue()) {
+          $default_template_conf_parent_target_id = $defaultTemplateConfiguration->get('parent_target')->getValue()[0]['target_id'];
+
+          $template_configuration_storage = \Drupal::entityTypeManager()->getStorage('template_configuration');
+          $template_configuration_ids = $template_configuration_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_template_conf_parent_target_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($template_configuration_ids) {
+            foreach ($template_configuration_ids as $template_configuration_id) {
+              $template_configuration->set('parent_target', $template_configuration_id);
+            }
+          }
+        }
+        if ($defaultTemplateConfiguration->get('maintenance_activity_type')->getValue()) {
+          $default_maintenance_item_id = $defaultTemplateConfiguration->get('maintenance_activity_type')->getValue()[0]['target_id'];
+
+          $maintenance_item_storage = \Drupal::entityTypeManager()->getStorage('maintenance_item');
+          $maintenance_item_ids = $maintenance_item_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_maintenance_item_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($maintenance_item_ids) {
+            foreach ($maintenance_item_ids as $maintenance_item_id) {
+              $template_configuration->set('maintenance_activity_type', $maintenance_item_id);
+            }
+          }
+        }
+
+        if ($defaultTemplateConfiguration->get('inspection_activity_type')->getValue()) {
+          $default_inspection_element_id = $defaultTemplateConfiguration->get('inspection_activity_type')->getValue()[0]['target_id'];
+
+          $inspection_element_storage = \Drupal::entityTypeManager()->getStorage('inspection_template_element');
+          $inspection_element_ids = $inspection_element_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_inspection_element_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($inspection_element_ids) {
+            foreach ($inspection_element_ids as $inspection_element_id) {
+              $template_configuration->set('inspection_activity_type', $inspection_element_id);
+            }
+          }
+        }
+
+        if ($defaultTemplateConfiguration->get('inspection_template')->getValue()) {
+          $default_inspection_template_id = $defaultTemplateConfiguration->get('inspection_template')->getValue()[0]['target_id'];
+
+          $nspection_template_storage = \Drupal::entityTypeManager()->getStorage('inspection_template');
+          $nspection_template_ids = $nspection_template_storage->getQuery()
+            ->condition('group_field', $group_id)
+            ->condition('cloned_ref_id', $default_inspection_template_id)
+            ->condition('status', 1)
+            ->accessCheck(FALSE)
+            ->execute();
+
+          if ($nspection_template_ids) {
+            foreach ($nspection_template_ids as $nspection_template_id) {
+              $template_configuration->set('inspection_template', $nspection_template_id);
+            }
+          }
+        }
+
+        $template_configuration->save();
+      }
+    }
+  }
+}
+
+/**
+ * Callback for cloning Lga instance.
+ */
+function group_contentenabler_add_default_entity_to_group_batch($group_id, $entity_type) {
+  $storage = \Drupal::entityTypeManager()->getStorage($entity_type);
+  // Default components.
+  if ($entity_type == "default_component") {
+    $default_component_ids = $storage->getQuery()
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+    $group = Group::load($group_id);
+    if ($default_component_ids) {
+      $default_components = DefaultComponent::loadMultiple($default_component_ids);
+      if (!empty($default_components)) {
+        foreach ($default_components as $component_entity) {
+          // Create a new entity of type Feature.
+          $comp_entity = Component::create([
+            'label' => $component_entity->label->value,
+            'description' => $component_entity->description->value,
+            'group_field' => $group_id,
+            'cloned_ref_id' => $component_entity->id(),
+          ]);
+          $comp_entity->save();
+          $pluginId = 'group_component:component';
+          $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+          $groupMembershipService->addContentToGroup($group, $comp_entity, $pluginId);
+
+        }
+      }
+    }
+  }
+
+  if ($entity_type == "default_feature") {
+    $feat_storage = \Drupal::entityTypeManager()->getStorage('default_feature');
+    $default_feature_ids = $feat_storage->getQuery()
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    $group = Group::load($group_id);
+    if (!empty($default_feature_ids)) {
+      $all_features = $feat_storage->loadMultiple($default_feature_ids);
+      foreach ($all_features as $all_feature) {
+
+        $feat_entity = Feature::create([
+          'label' => $all_feature->label->value,
+          'description' => $all_feature->description->value,
+          'inspectable_feature' => $all_feature->inspectable_feature->value,
+          'group_field' => $group_id,
+          'cloned_ref_id' => $all_feature->id(),
+        ]);
+
+        // Save the entity.
+        $feat_entity->save();
+
+        $plugin_id = 'group_feature:feature';
+        $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+        $groupMembershipService->addContentToGroup($group, $feat_entity, $plugin_id);
+      }
+    }
+  }
+
+  // Default Assets.
+  if ($entity_type == "default_asset_type") {
+    $default_assets_ids = $storage->getQuery()
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    $group = Group::load($group_id);
+    if ($default_assets_ids) {
+      $default_assets = DefaultAssetType::loadMultiple($default_assets_ids);
+      if (!empty($default_assets)) {
+        foreach ($default_assets as $default_asset) {
+          $assets_entity = AssetType::create([
+            'label' => $default_asset->label->value,
+            'description' => $default_asset->description->value,
+            'asset_category' => ($default_asset->asset_category->getValue()) ? $default_asset->asset_category->getValue()[0]['target_id'] : '',
+            'group_field' => $group_id,
+            'cloned_ref_id' => $default_asset->id(),
+          ]);
+          $assets_entity->save();
+
+          $pluginId = 'group_asset_type:asset_type';
+          $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+          $groupMembershipService->addContentToGroup($group, $assets_entity, $pluginId);
+
+        }
+      }
+    }
+  }
+
+  // Default maintenance item.
+  if ($entity_type == "default_maintenance_item") {
+    $default_maintenance_ids = $storage->getQuery()
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    $group = Group::load($group_id);
+    if ($default_maintenance_ids) {
+      $default_maintenances = DefaultMaintenanceItem::loadMultiple($default_maintenance_ids);
+      if (!empty($default_maintenances)) {
+        foreach ($default_maintenances as $default_maintenance) {
+          $maintenance_entity = MaintenanceItem::create([
+            'title' => $default_maintenance->label->value,
+            'work_type' => ($default_maintenance->work_type->getValue()) ? $default_maintenance->work_type->getValue()[0]['target_id'] : '',
+            'work_item_no' => $default_maintenance->work_item_no->value,
+            'description' => $default_maintenance->description->value,
+            'default' => $default_maintenance->default->value,
+            'attribute_type' => $default_maintenance->attribute_type->value,
+            'notes' => $default_maintenance->notes->value,
+            'images' => $default_maintenance->images->value,
+            'group_field' => $group_id,
+            'cloned_ref_id' => $default_maintenance->id(),
+          ]);
+          $maintenance_entity->save();
+          $pluginId = 'group_maintenance_item:maintenance_item';
+          $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+          $groupMembershipService->addContentToGroup($group, $maintenance_entity, $pluginId);
+
+        }
+      }
+    }
+  }
+
+  // Default maintenance task.
+  if ($entity_type == "default_maintenance_task") {
+    $default_maintenance_ids = $storage->getQuery()
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    $group = Group::load($group_id);
+    if ($default_maintenance_ids) {
+      $default_maintenance_task = DefaultMaintenanceTask::loadMultiple($default_maintenance_ids);
+      if (!empty($default_maintenance_task)) {
+        foreach ($default_maintenance_task as $task_entity) {
+          $maintenance_task_entity = MaintenanceTask::create([
+            'label' => $task_entity->label->value,
+            'attribute_type' => $task_entity->attribute_type->value,
+            'notes' => $task_entity->notes->value,
+            'images' => $task_entity->images->value,
+            'maintenance_text' => $task_entity->maintenance_text->value,
+            'group_field' => $group_id,
+            'cloned_ref_id' => $task_entity->id(),
+          ]);
+          $maintenance_task_entity->save();
+
+          $pluginId = 'group_maintenance_task:maintenance_task';
+          $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+          $groupMembershipService->addContentToGroup($group, $maintenance_task_entity, $pluginId);
+        }
+      }
+    }
+  }
+  // Default inspection.
+  if ($entity_type == "default_inspection_template") {
+    $default_inspection_ids = $storage->getQuery()
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    $group = Group::load($group_id);
+    if ($default_inspection_ids) {
+      $default_components = DefaultInspectionTemplate::loadMultiple($default_inspection_ids);
+      if (!empty($default_components)) {
+        foreach ($default_components as $default_component) {
+          // Create a new entity of type Feature.
+          $insp_entity = InspectionTemplate::create([
+            'label' => $default_component->label->value,
+            'activity_type' => $default_component->get('activity_type')->value,
+            'work_type' => ($default_component->work_type->getValue()) ? $default_component->work_type->getValue()[0]['target_id'] : '',
+            'group_field' => $group_id,
+            'cloned_ref_id' => $default_component->id(),
+            'order' => $default_component->get('order')->value,
+          ]);
+          $insp_entity->save();
+
+          $pluginId = 'group_inspection_template:inspection_template';
+          $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+          $groupMembershipService->addContentToGroup($group, $insp_entity, $pluginId);
+          $inspection_id = $default_component->id->value;
+
+        }
+      }
+    }
+  }
+
+  if ($entity_type == "default_inspection_template_ele") {
+    $insp_storage = \Drupal::entityTypeManager()->getStorage('default_inspection_template_ele');
+    $default_inspection_ele_ids = $insp_storage->getQuery()
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    $group = Group::load($group_id);
+    if (!empty($default_inspection_ele_ids)) {
+      $all_inspections = $insp_storage->loadMultiple($default_inspection_ele_ids);
+      foreach ($all_inspections as $all_inspection) {
+        $inspection_ele_entity = InspectionTemplateElement::create([
+          'step_no' => $all_inspection->step_no->value,
+          'label' => $all_inspection->label->value,
+          'inspection_text' => $all_inspection->inspection_text->value,
+          'attribute_type' => $all_inspection->attribute_type->value,
+          'negative_response' => $all_inspection->negative_response->value,
+          'notes' => $all_inspection->notes->value,
+          'images' => $all_inspection->images->value,
+          'is_maintenance_required' => $all_inspection->is_maintenance_required->value,
+          'parent_target' => $all_inspection->parent_target->value,
+          'button_label' => $all_inspection->button_label->value,
+          'information_notice' => $all_inspection->information_notice->value,
+          'group_field' => $group_id,
+          'cloned_ref_id' => $all_inspection->id(),
+        ]);
+        $inspection_ele_entity->save();
+        $inspection_id = $all_inspection->id->value;
+        $pluginId = 'group_inspection_template_element:inspection_template_element';
+        $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+        $groupMembershipService->addContentToGroup($group, $inspection_ele_entity, $pluginId);
+
+      }
+    }
+  }
+
+  if ($entity_type == "default_template_configuration") {
+    $temp_configuration_storage = \Drupal::entityTypeManager()->getStorage('default_template_configuration');
+    $default_temp_conf_ids = $temp_configuration_storage->getQuery()
+      ->condition('status', 1)
+      ->accessCheck(FALSE)
+      ->execute();
+
+    $group = Group::load($group_id);
+    if (!empty($default_temp_conf_ids)) {
+      $all_temp_confs = $temp_configuration_storage->loadMultiple($default_temp_conf_ids);
+      foreach ($all_temp_confs as $all_temp_conf) {
+        $temp_conf_entity = TemplateConfiguration::create([
+          'step_no' => $all_temp_conf->step_no->value,
+          'label' => $all_temp_conf->inspection_name->value,
+          'inspection_text' => $all_temp_conf->inspection_text->value,
+          'attribute_type' => $all_temp_conf->attribute_type->value,
+          'work_type' => ($all_temp_conf->work_type->getValue()) ? $all_temp_conf->work_type->getValue()[0]['target_id'] : '',
+          'parent_target' => $all_temp_conf->parent_target->value,
+          'button_label' => $all_temp_conf->button_label->value,
+          'information_notice' => $all_temp_conf->information_notice->value,
+          'notes' => $all_temp_conf->notes->value,
+          'images' => $all_temp_conf->images->value,
+          'group_field' => $group_id,
+          'cloned_ref_id' => $all_temp_conf->id(),
+        ]);
+        $temp_conf_entity->save();
+        $inspection_id = $all_temp_conf->id->value;
+        $pluginId = 'group_template_configuration:template_configuration';
+        $groupMembershipService = \Drupal::service('group_contentenabler.group_membership_service');
+        $groupMembershipService->addContentToGroup($group, $temp_conf_entity, $pluginId);
+
+      }
+    }
+  }
+}
+
+/**
+ * Callback function to be called when batch process completes.
+ */
+function group_contentenabler_batch_complete($success, $results, $operations) {
+  if ($success) {
+    // Batch process completed successfully.
+    \Drupal::messenger()->addMessage(t('Batch process completed successfully.'));
+  }
+  else {
+    // Batch process encountered errors.
+    \Drupal::messenger()->addError(t('Batch process encountered errors. Please check logs for details.'));
+  }
+}

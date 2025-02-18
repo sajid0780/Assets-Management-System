@@ -1,0 +1,22 @@
+group_contentenabler.lga_members:
+  path: 'lga-members'
+  defaults:
+    _title: 'Members'
+    _controller: '\Drupal\group_contentenabler\Controller\GroupLgaMembers::build'
+  requirements:
+    _custom_access: '\Drupal\group_contentenabler\Controller\GroupLgaMembers::access'
+
+group_contentenabler.assign_group_form:
+  path: "/assign-group-form"
+  defaults:
+    _form: '\Drupal\group_contentenabler\Form\AssignGroupForm'
+  requirements:
+    _custom_access: '\Drupal\group_contentenabler\Form\AssignGroupForm::access'
+
+group_contentenabler.lga_switcher_form:
+  path: '/lga-switcher'
+  defaults:
+    _title: 'Lga switcher block'
+    _form: 'Drupal\group_contentenabler\Form\LgaSwitcherForm'
+  requirements:
+    _permission: 'administer site configuration'
